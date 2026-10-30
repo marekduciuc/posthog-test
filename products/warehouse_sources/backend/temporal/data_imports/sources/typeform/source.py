@@ -50,7 +50,7 @@ class TypeformSource(SimpleSource[TypeformSourceConfig]):
             "typeform-elements",
         ),
         pypi=("typeform",),
-        competes_with=(ProductKey.SURVEYS,),
+        alternative_to=(ProductKey.SURVEYS,),
     )
 
     api_docs_url = "https://www.typeform.com/developers/"
@@ -110,6 +110,7 @@ You can generate a personal access token in your [Typeform account settings](htt
                     ),
                     SourceFieldSelectConfig(
                         name="response_types",
+                        sync_setting=True,
                         label="Responses to sync",
                         required=False,
                         defaultValue=RESPONSE_TYPE_COMPLETED_ONLY,

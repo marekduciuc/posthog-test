@@ -1,6 +1,9 @@
 from posthog.test.base import APIBaseTest
 from unittest.mock import MagicMock, patch
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+
 from parameterized import parameterized
 
 from posthog.constants import AvailableFeature
@@ -20,6 +23,7 @@ from products.review_hog.backend.models import (
     ReviewUserRepositoryChoice,
     ReviewUserSettings,
 )
+from products.review_hog.backend.repository_settings import ProjectRepositories
 from products.review_hog.backend.temporal.client import WorkflowProbe
 
 INSTALLATION = "1001"
@@ -106,13 +110,13 @@ class TestReviewRepositorySettingsAPI(APIBaseTest):
 
     @parameterized.expand(
         [
-            ("environment_only", False, (403, 403, 403, 403, 403)),
-            ("environment_and_parent", True, (200, 200, 200, 200, 200)),
+            ("environment_only", False, (403, 403, 403, 403, 403, 403)),
+            ("environment_and_parent", True, (200, 200, 200, 200, 200, 200)),
         ]
     )
     @patch("products.review_hog.backend.pr_status.probe_workflow", return_value=WorkflowProbe.NOT_RUNNING)
     def test_a_project_scoped_key_needs_the_parent_project(
-        self, _name: str, include_parent: bool, expected: tuple[int, int, int, int, int], _probe: MagicMock
+        self, _name: str, include_parent: bool, expected: tuple[int, int, int, int, int, int], _probe: MagicMock
     ) -> None:
         environment = Team.objects.create(organization=self.organization, parent_team=self.team, name="Staging")
         value = generate_random_token_personal()
@@ -133,6 +137,7 @@ class TestReviewRepositorySettingsAPI(APIBaseTest):
             self._url("reviews/pr_status/", environment), {"pr_url": "https://github.com/PostHog/posthog/pull/5"}
         )
         table = self.client.get(self._url("reviews/table/", environment))
+        choices = self.client.get(self._url("repository_choices/", environment))
 
         assert (
             read.status_code,
@@ -140,7 +145,32 @@ class TestReviewRepositorySettingsAPI(APIBaseTest):
             reviews.status_code,
             pr_status.status_code,
             table.status_code,
+            choices.status_code,
         ) == expected
+
+    def test_installations_load_creators_in_one_query(self) -> None:
+        extra_creators = [User.objects.create(email=f"creator{i}@example.com", first_name=f"C{i}") for i in range(3)]
+        for index, creator in enumerate(extra_creators):
+            Integration.objects.create(
+                team=self.team,
+                kind="github",
+                integration_id=f"200{index}",
+                config={"account": {"name": f"org-{index}"}},
+                created_by=creator,
+            )
+        Integration.objects.create(team=self.team, kind="github", integration_id="3000", config={})
+
+        with CaptureQueriesContext(connection) as queries:
+            summaries = ProjectRepositories(self.team, self.user).installations()
+
+        assert len([query for query in queries if 'FROM "posthog_user"' in query["sql"]]) == 1
+        assert {summary.installation_id: summary.connected_by for summary in summaries} == {
+            INSTALLATION: self.user,
+            "2000": extra_creators[0],
+            "2001": extra_creators[1],
+            "2002": extra_creators[2],
+            "3000": None,
+        }
 
     def test_project_rule_stores_only_what_differs_and_is_logged(self) -> None:
         res = self.client.patch(
@@ -360,10 +390,20 @@ class TestReviewRepositorySettingsAPI(APIBaseTest):
 
         exceptions = self.client.get(f"{url}&view=exceptions").json()
         assert [entry["full_name"] for entry in exceptions["results"]] == ["example-org/docs"]
+        # web follows the project with no exception and no own choice, so only the fold counts it.
+        differs = self.client.get(f"{url}&view=differs").json()
+        assert sorted(entry["full_name"] for entry in differs["results"]) == ["example-org/api", "example-org/docs"]
+        assert (differs["folded"], differs["folded_preview"], differs["folded_result"]) == (
+            1,
+            ["example-org/web"],
+            {"flash": True, "reason": "own_default"},
+        )
         page = self.client.get(f"{url}&view=in_project&limit=1").json()
         assert (page["total"], page["has_more"], page["next_offset"]) == (2, True, 1)
+        assert everything.json()["folded"] == differs["folded"]
         searched = self.client.get(f"{url}&search=API").json()
         assert [entry["full_name"] for entry in searched["results"]] == ["example-org/api"]
+        assert searched["folded"] == 0
 
     def test_overview_needs_a_connected_installation(self) -> None:
         res = self.client.get(self._url("repository_overview/?installation_id=9999"))

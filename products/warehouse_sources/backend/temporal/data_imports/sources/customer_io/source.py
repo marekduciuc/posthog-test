@@ -159,7 +159,7 @@ class CustomerIOSource(
             "github.com/customerio/cdp-analytics-swift",
             "github.com/customerio/customerio-ios-fcm",
         ),
-        competes_with=(ProductKey.WORKFLOWS,),
+        alternative_to=(ProductKey.WORKFLOWS,),
     )
 
     supported_versions = ("v1",)
@@ -171,6 +171,10 @@ class CustomerIOSource(
     @property
     def source_type(self) -> ExternalDataSourceType:
         return ExternalDataSourceType.CUSTOMERIO
+
+    @property
+    def credential_kind(self) -> str | None:
+        return "customer-io"
 
     @property
     def webhook_template(self) -> Optional["HogFunctionTemplateDC"]:

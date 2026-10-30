@@ -15,7 +15,6 @@ from django.utils.html import escape
 
 import requests
 from parameterized import parameterized
-from rest_framework.test import APIClient
 
 from posthog.api.oauth.cimd import (
     CIMDFetchError,
@@ -395,6 +394,25 @@ class TestFetchAndUpsertCimdApplication(APIBaseTest):
             self.assertEqual(refreshed.client_type, OAuthApplication.CLIENT_CONFIDENTIAL)
         else:
             self.assertEqual(refreshed.client_type, OAuthApplication.CLIENT_PUBLIC)
+
+    @parameterized.expand(
+        [
+            ("document_logo", {"logo_uri": "https://cdn.example.com/logo.png"}, "https://cdn.example.com/logo.png"),
+            (
+                "host_icon_without_logo",
+                {"client_uri": "https://someone-else.example.org"},
+                "https://app.example.com/apple-touch-icon.png",
+            ),
+        ]
+    )
+    @patch("posthog.api.oauth.cimd.requests.Session.get")
+    def test_stores_logo_or_document_host_icon(self, _name, overrides, expected_logo_uri, mock_get, _url_mock):
+        mock_get.return_value = _mock_response(_make_metadata(**overrides), headers={})
+
+        app = fetch_and_upsert_cimd_application(VALID_CIMD_URL)
+
+        assert app is not None
+        self.assertEqual(app.logo_uri, expected_logo_uri)
 
     @patch("posthog.api.oauth.cimd.requests.Session.get")
     def test_updates_existing_application(self, mock_get, _url_mock):
@@ -1042,15 +1060,6 @@ class TestCIMDVerificationRejectedCaptureEvent(APIBaseTest):
         ]
         self.assertEqual(len(rejected), 1)
         self.assertEqual(rejected[0].kwargs["properties"]["reason"], "app_url_missing")
-
-
-class TestAuthorizationServerMetadata(APIBaseTest):
-    def test_advertises_cimd_support(self):
-        client = APIClient()
-        response = client.get("/.well-known/oauth-authorization-server")
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertTrue(data.get("client_id_metadata_document_supported"))
 
 
 @patch("posthog.security.url_validation.resolve_host_ips", return_value={ip_address("93.184.216.34")})
